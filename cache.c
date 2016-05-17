@@ -8,6 +8,13 @@
 // need to see if queue addition is happening
 
 int print_bits(unsigned long long int);
+//request * req_init(unsigned long long int, int, int);
+
+typedef struct request request;
+typedef struct cache cache;
+
+
+request * req_init(unsigned long long int, int, int);
 
 typedef struct
 {
@@ -16,9 +23,6 @@ typedef struct
 	int dirty;
 	unsigned long counter;
 }blk;
-
-typedef struct cache cache;
-typedef struct request request;
 
 struct cache
 {
@@ -49,122 +53,85 @@ struct request
 
 };
 
-int queue_add(request* ptr, request * req)
+//TODO: Can implement tail based insertion. Maybe for a later commit
+
+int queue_add(cache * cobj, request* ptr, request * req) //TODO: Error checking in case there is a request "object" already present in the queue
 {
-	//printf("\nInside Queue add function");
-	//print_bits(req->addr);
-
-	request * temp = malloc(sizeof(request));
-	temp = ptr;
-	int req_present=0; 	
-
+	request * temp;
+	temp = ptr->next;
+	int req_present=0; 
+	int set_bits = log(cobj->block_size)/log(2);
+	unsigned long long int ones = 0xFFFFFFFFFFFFFFFF;
+	
 	if(temp == NULL) //First element is being added. i.e No element in the queue
 	{
 		printf("\nFirst element was added");
-		ptr = req;
-		ptr->next = NULL;
-		free(temp);
-//		printf("\nreq_present being returned: %d", req_present);
+		req->next = NULL;
+		ptr->next = req;
+		//printf("\n2. Address: %lu", (unsigned long)temp->next);
+	
 		return req_present; //successfully added
 	}
 
 	while(temp->next!=NULL)
 	{
-		if(temp->addr == req->addr) 
-		{ 
-			req_present++; // just indicating if any request was preset
+		if(((temp->addr)&(ones<<set_bits)) == ((req->addr)&(ones<<set_bits))) //need to do that block bot truncation thing here
+		{
+			req_present++; // Count indicating if any request for current address was already preset
 		}
 		temp=temp->next; //moving pointer to last queue block
 	}
-
-	/*
-	//this part can be used if only one request for a particular address is to be present 
-	if(req_present>0) 
-	{
-		free(temp);
-		return req_present;
-	}
-	*/
-
+	req->next= NULL;
 	temp->next=req;
-	temp->next->next=NULL;
-	free(temp);
 
-//printf("\nreq_present being returned: %d", req_present);
 return req_present; //return 0 if no duplicate requests present... Return the number of duplicates otherwise
 }
 
-int queue_remove(request * ptr, request * req, int choice) //choice = 1 means remove all requests which are for a particualr address. ) means remove only that queue object which was added last
+int queue_remove(cache * cobj, request * ptr, request * req, int choice) //choice = 1 means remove all requests which are for a particualr address. 0 means remove only that queue object which was added last
 {
-	request * cur = malloc(sizeof(request));
-	cur = ptr;
-	int count;
-	if(cur==NULL) { free(cur); return 1;} //Nothing to remove. Mostly this would be called out of indexing error
+	int count=0;
+	request * cur; // = malloc(sizeof(request));
+	cur = ptr->next;
+	if(cur==NULL) { printf("\nNothing to remove"); return 1; } //Nothing to remove. Mostly this would be called out of indexing error
 
-	request * prev = malloc(sizeof(request));
-	prev->next = cur; 
-
+	request * prev; // = malloc(sizeof(request));
+	prev = ptr; 
+	unsigned long long int ones = 0xFFFFFFFFFFFFFFFF;
+	int set_bits = log(cobj->block_size)/log(2); //cobj was passed just for this 
 
 	while(cur!=NULL)
 	{
-		if(   (choice & ((cur->addr==req->addr) || (cur==req))) || ((!choice) & (cur==req)) ) //If address is the same or the request itself is the same, we remove that request from the queue		
+		if((choice && ((((cur->addr)&(ones<<set_bits))==((req->addr)&(ones<<set_bits)) || (cur==req)))) || ((!choice) && (cur==req)) ) //If address is the same or the request itself is the same, we remove that request from the queue		
 		{
-			if(cur == ptr)
-			{
-				cur=cur->next;
-				free(prev->next);
-				prev->next= cur;
-				ptr = cur;				
-				continue;
-			}
-
-			else if(prev == ptr)
-			{
-				cur=cur->next;
-				free(prev->next);
-				prev->next = cur;
-				ptr = prev;
-				continue;
-			}
-		
-			else
-			{
-				cur = cur->next;
-				free(prev->next);
-				prev->next = cur;
-				continue;
-			}
-		count++;
+			cur=cur->next;
+			prev->next= cur;
+			count++;
 		}
-		
 		else
 		{
 			prev  = cur;
 			cur = cur->next;
 		}
 
-	}	
-	free(cur);
-	free(prev);
+	}
 
 return count;
 }
 
-
-int num_queue_elements(request * req)
+int num_queue_elements(request * req) //To check the number of elements in the queue
 {
-	request * ptr = malloc(sizeof(request));
+	request * ptr;
 	ptr = req;
 	
 	int num = 0;
-	if(ptr==NULL) return 0;
+	if(ptr->next==NULL) return 0;
 
-	while(ptr!=NULL)
+	while(ptr->next!=NULL)
 	{
 		num++;
 		ptr = ptr->next;
 	}
-printf("fraaaaaaaaaaaaaaaaaaaaaaaaaaaaam");
+
 return num;
 }
 
@@ -177,12 +144,8 @@ typedef struct
 
 naddress * nexta;
 
-
 int parse(cache * cobj, request * req) 
 {
-//	request * req;// = malloc(sizeof(request));
-//	req = reqt;
-
 	nexta->set = 0;
 	nexta->tag = 0;
 	int set_bit_st = log(cobj->block_size)/log(2);
@@ -240,7 +203,7 @@ int snapshot(cache * cobj)
 return 0;
 }
 
-cache * init(char * name, long block_size, long ways, long sets, int max_req, int max_evict)
+cache * cache_init(char * name, long block_size, long ways, long sets, int max_req, int max_evict)
 {
 	long i;
         cache * cobj = malloc(sizeof(cache));
@@ -260,19 +223,17 @@ cache * init(char * name, long block_size, long ways, long sets, int max_req, in
         }
 
 	cobj->rq_start = malloc(sizeof(request));	
-	cobj->rq_start = NULL;
+	cobj->rq_start->next = NULL;
 
 	cobj->eq_start = malloc(sizeof(request));
-	cobj->eq_start = NULL;
+	cobj->eq_start->next = NULL;
 
 	cobj->next = NULL;
 
 	nexta = malloc(sizeof(naddress));
 
-	return cobj;
+return cobj;
 }
-
-
 
 long lookup(cache * cobj, request * req)
 {
@@ -288,12 +249,7 @@ long lookup(cache * cobj, request * req)
 	for(i=0; i<cobj->ways; i++)
 		if(( (cobj->tag_block[nexta->set][i].addr) & (ones<<block_bits)) == ((req->addr) & (ones<<block_bits)) && (cobj->tag_block[nexta->set][i].valid==1)) return i; //return the WAY where it was found
 
-	//printf("\nLookup failed to get a way");
-   
-
-	return -1; //None found. Return negative one
- 
-
+return -1; //None found. Return negative one
 }
 
 
@@ -320,11 +276,7 @@ long find_victim(cache * cobj, request * req)
 		}
 
 	}
-       
-
 	return way_id;	
-  
-
 }
 
 
@@ -391,23 +343,19 @@ int eq_add(cache * cobj, request * req)
 {
 	
 	if(cobj->pending_evict>=cobj->max_evict-1) { return -1; }
-	queue_add(cobj->eq_start, req);
+	queue_add(cobj, cobj->eq_start, req);
 	cobj->pending_evict++;
 
 }
 
 int eq_remove(cache * cobj, request * req)
 {
-	queue_remove(cobj->eq_start, req, 0);
+	queue_remove(cobj,cobj->eq_start, req, 0);
 	cobj->pending_evict--;
 }
 
 int rq_add(cache * cobj, request * req) //request queue add
 {
-
-	//printf("\nInside rq_add");
-	//print_bits(req->addr);
-
 	int req_present=0;
 	if(cobj->pending_req>=cobj->max_req-1) {return -1;} //No queue space to insert request. Should send failure to add to queue 
 
@@ -415,14 +363,10 @@ int rq_add(cache * cobj, request * req) //request queue add
 	
 	req->count++;
 	req->cache_queue[req->count] = cobj; //adding the cache object to the request array
-	
 
-	//add req pointer to cobj req array...check for previous entries  
-	
-	//printf("\nJust before adding:");
-	//print_bits(req->addr);
+	//add req pointer to cobj req array...check for previous entries
 
-	req_present = queue_add(cobj->rq_start, req);
+	req_present = queue_add(cobj, cobj->rq_start, req);
 	cobj->pending_req++;
 
 
@@ -434,19 +378,19 @@ int rq_remove(cache * cobj, request * req, int choice)
 {
 	int t;
 	req->count--;
-	t = queue_remove(cobj->rq_start, req, choice); 	
+	t = queue_remove(cobj,cobj->rq_start, req, choice); 	
 	cobj->pending_req-=t;
 	
 }
 
 int queue_len(cache * cobj)
 {
+	printf("\n%s: Queue_len checker called", cobj->name);
 	int j=0, k=0;
 	j = num_queue_elements(cobj->rq_start);
 	k = num_queue_elements(cobj->eq_start);
-	printf("\n%s: Request queue-%d, Evict queue-%d", cobj->name, j, k);
+	printf("\n%s: Request queue -> %d, Evict queue -> %d", cobj->name, j, k);
 }
-
 
 int insert(cache * cobj, request * req)
 {
@@ -458,10 +402,7 @@ int insert(cache * cobj, request * req)
 	rq_remove(cobj, req, 1);
 	victim = find_victim(cobj, req);
 	update(cobj, req, victim); // ppp this should also take care of policy.... Also val/dirty stuff
-
 }
-
-
 
 int access_return(request * req)
 {
@@ -473,13 +414,11 @@ int access_return(request * req)
 	}
 }
 
-
 int check_policy(cache * cobj, request * req)
 {
 	//To check if the current cache is inclusive of the cahce pointers in the request cache_queue
 
 }
-
 
 int dram_access()
 {
@@ -524,17 +463,20 @@ int access(cache * cobj, request * req)
 
 	else //Cache miss
 	{
-
 		printf("\n%s: Cache MISS", cobj->name);
 		flag = 0;
 		temp = rq_add(cobj,req);
+
+		queue_len(cobj);	//Checking if the request was added to the queue
+		getchar();
+
 		if(temp==0) //No problem in adding to the queue		
 			{
 				
 				// Find a victim to replace the current request 
 				victim = find_victim(cobj, req);
 				printf("\nREQ added to the request queue. Victim found way: %ld", victim);
-				queue_len(cobj);				
+
 				parse(cobj, req);
 				
 				if(cobj->tag_block[nexta->set][victim].valid!=0) //Add to queue only if the victim was valid
@@ -606,11 +548,7 @@ int access(cache * cobj, request * req)
 
 }//end switch case
 
-
-printf("\n Exiting access\n");
-
 }//end access
-
 
 unsigned long long int gen_addr(cache * cobj, unsigned long long int set, unsigned long long int tag)
 {
@@ -622,16 +560,12 @@ unsigned long long int gen_addr(cache * cobj, unsigned long long int set, unsign
 	return ((tag<<(pa_size-tag_bits))|(set<<set_bits));
 }
 
-
 int print_bits(unsigned long long int add)
 {
 	//Warning. This prints bits int he reverse order and truncates the "MSB".. Need to fix later
 
 	unsigned long long int addr = add;
-
-	printf("\nPrinting bits: ");
 	if(addr==0) { printf("0"); return 0;}
-
 	while(addr)
 	{
 		if(addr & 0x01) printf("1");
@@ -650,7 +584,6 @@ int manual_set(cache * cobj, long set_num, long way_num, long tag_num, int valid
 	print_bits(gen_addr(cobj, set_num, tag_num));
 }
 
-
 int main()
 {
 	unsigned long long int addr;
@@ -664,32 +597,20 @@ int main()
 	cache *l2;
 
 	//Cache declaration parameters
-	name = "L1";
-	blk_size = 64;
-	way = 2;
-	set = 16;
-	req_q = 32;
-	evict_q = 32;	
-	
-	l1 = init(name,blk_size,way,set,req_q,evict_q); //name, block size, way, set, request queue, evict queue
+	//l1 = init(name,blk_size,way,set,req_q,evict_q); //name, block size, way, set, request queue, evict queue
 
-	name = "L2";
-	blk_size = 128;
-	way = 4;
-	set = 16;
-	req_q = 32;
-	evict_q = 32;	
-	
-	l2 = init(name,blk_size,way,set,req_q,evict_q); //name, block size, way, set, request queue, evict queue
+	l1 = cache_init("L1", 64, 2, 4, 32, 32);
+	l2 = cache_init("L2", 64, 4, 16, 32, 32); //name, block size, way, set, request queue, evict queue
 	
 	l1->next = l2;
 	
-	printf("\nResting state");
-	snapshot(l1);	
-	snapshot(l2);
+	//printf("\nResting state");
+
+	//snapshot(l1);	
+	//snapshot(l2);
 	
 	//temporary test factors
-	set_num = 5;
+	set_num = 9;
 	tag_num = 15;
 	way_num = 2;
 	valid = 1;
@@ -699,6 +620,7 @@ int main()
 	manual_set(l2, set_num, way_num-1, tag_num+15, valid, dirty);
 
 	printf("\nManual set for L2 performed");
+
 	snapshot(l1);
 	snapshot(l2);
 	
@@ -708,13 +630,14 @@ int main()
 	mode = 0;
 
 	request * req;
+		
 	req = req_init(addr, ldst, mode);	
-	
-	printf("\nFirst access with address");
-	print_bits(addr);
-	access(l1, req);
-	queue_len(l1);
 
+	access(l1, req);
+
+	queue_len(l1); //See if anything in the queue of l1
+	getchar();
+		
 	snapshot(l1);
 	snapshot(l2);
 
@@ -723,24 +646,18 @@ int main()
 	addr = gen_addr(l2, set_num, tag_num+15);
 	req=req_init(addr, ldst, mode);
 	
-	printf("\nSecond access with address");
+	printf("\nSecond access with address: ");
+	
 	print_bits(addr);
-	access(l1, req);
+	
+	//access(l1, req);
+	
 	printf("\nSecond access complete");
 	
-	snapshot(l1);
-	snapshot(l2);
+	//snapshot(l1);
+	//snapshot(l2);
 
 
-/*
-	snapshot(l1);
-
-	ldst = 0;
-	req = req_init(addr,ldst, mode);
-	
-	access(l1,req);	
-	snapshot(l1);
-*/
 	printf("\n\n\n");
 
 return 0;
