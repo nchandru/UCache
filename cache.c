@@ -5,7 +5,9 @@
 #define pa_size 64
 #define MAX_LEVELS 3
 
-// need to see if queue addition is happening
+//making request duplicates for queues 
+//Check if a strcuture type of CPU can be added during cache init? Or somewhere
+//Need to add access_permission before sending request
 
 int print_bits(unsigned long long int);
 //request * req_init(unsigned long long int, int, int);
@@ -33,32 +35,63 @@ struct cache
 	long hit;
 	blk **tag_block;
 	struct cache *next;
-	request * rq_start;
-	request * eq_start;
+	request * response_start;
+	request * pending_start;
+	request * evict_start;
 	int pending_evict;
-	int max_evict;
+	int evict_max;
+	int pending_max;
+
 	int pending_req;
-	int max_req;
 	char * name;
+
+	unsigned long long int next_available;
+	unsigned long long int lookup_latency;
+	unsigned long long int  read_latency;
+	unsigned long long int  write_latency;
 };
 
 struct request
 {
+	//Also change dulicate_request if adding/removing variables from this structure
 	unsigned long long int addr;
 	cache** cache_queue;	
 	int count;
 	int ldst;
 	int mode; //0 for normal ld/st....1 for eviction....2 for writeback  
 	request * next;
+	unsigned long long int access_time;
+	unsigned long long int return_time;
 
 };
 
 //TODO: Can implement tail based insertion. Maybe for a later commit
 
-int queue_add(cache * cobj, request* ptr, request * req) //TODO: Error checking in case there is a request "object" already present in the queue
+request * duplicate_request(request * to, request * from)
+{
+	int i;
+	//request * req_init(unsigned long long int addr, int ldst, int mode)
+	to = req_init(from->addr, from->ldst, from->mode);
+	
+	for(i=0; i<=from->count; i++)
+		to->cache_queue[i]=from->cache_queue[i];
+	
+	to->mode = from->mode;
+	to->next = NULL;
+	to->access_time=from->access_time;
+	to->return_time=from->return_time;
+
+return to;
+}
+
+int queue_add(cache * cobj, request* ptr, request * reqin) //TODO: Error checking in case there is a request "object" already present in the queue
 {
 	request * temp;
 	temp = ptr->next;
+	
+	request * req;
+	req = duplicate_request(req, reqin);
+
 	int req_present=0; 
 	int set_bits = log(cobj->block_size)/log(2);
 	unsigned long long int ones = 0xFFFFFFFFFFFFFFFF;
@@ -89,6 +122,7 @@ return req_present; //return 0 if no duplicate requests present... Return the nu
 
 int queue_remove(cache * cobj, request * ptr, request * req, int choice) //choice = 1 means remove all requests which are for a particualr address. 0 means remove only that queue object which was added last
 {
+	//Freeing memory should be done
 	int count=0;
 	request * cur; // = malloc(sizeof(request));
 	cur = ptr->next;
@@ -178,10 +212,14 @@ request * req_init(unsigned long long int addr, int ldst, int mode)
 	temp->ldst = ldst;
 	temp->mode = mode;
 
-	temp->cache_queue  = malloc(MAX_LEVELS * sizeof(cache*));
+	temp->cache_queue  = malloc(MAX_LEVELS * sizeof(cache*)); //TODO: plus one becasue planning to add CPU object as well
 	for(i=0; i<MAX_LEVELS; i++)
 		temp->cache_queue[i] = malloc(sizeof(cache));
 	temp->next = NULL;
+
+	temp->access_time = 0;
+	temp->return_time = 0;
+
 return temp;
 }
 
@@ -203,30 +241,33 @@ int snapshot(cache * cobj)
 return 0;
 }
 
-cache * cache_init(char * name, long block_size, long ways, long sets, int max_req, int max_evict)
+cache * cache_init(char * name, long block_size, long ways, long sets, int pending_max, int evict_max,long lookup_latency, long read_latency, long write_latency)
 {
 	long i;
         cache * cobj = malloc(sizeof(cache));
         cobj->block_size=block_size;
         cobj->ways = ways;
         cobj->sets = sets;
-	cobj->max_req = max_req;
-	cobj->max_evict = max_evict;
+	cobj->pending_max = pending_max;
+	cobj->evict_max = evict_max;
 	cobj->pending_req =0;
 	cobj->pending_evict =0;
 	cobj->name = name;
 	cobj->tag_block = malloc(sets * sizeof(blk*));
+	cobj->read_latency = read_latency;
+	cobj->write_latency = write_latency;
+	cobj->lookup_latency = lookup_latency;
 
         for(i=0; i<sets; i++)
         {
 		cobj->tag_block[i] = malloc(ways * sizeof(blk));
         }
 
-	cobj->rq_start = malloc(sizeof(request));	
-	cobj->rq_start->next = NULL;
+	cobj->pending_start = malloc(sizeof(request));	
+	cobj->pending_start->next = NULL;
 
-	cobj->eq_start = malloc(sizeof(request));
-	cobj->eq_start->next = NULL;
+	cobj->evict_start = malloc(sizeof(request));
+	cobj->evict_start->next = NULL;
 
 	cobj->next = NULL;
 
@@ -342,22 +383,22 @@ int print_count_values(cache* cobj, long set) //For dumping the counters per set
 int eq_add(cache * cobj, request * req)
 {
 	
-	if(cobj->pending_evict>=cobj->max_evict-1) { return -1; }
-	queue_add(cobj, cobj->eq_start, req);
+	if(cobj->pending_evict>=cobj->evict_max-1) { return -1; }
+	queue_add(cobj, cobj->evict_start, req);
 	cobj->pending_evict++;
 
 }
 
 int eq_remove(cache * cobj, request * req)
 {
-	queue_remove(cobj,cobj->eq_start, req, 0);
+	queue_remove(cobj,cobj->evict_start, req, 0);
 	cobj->pending_evict--;
 }
 
 int rq_add(cache * cobj, request * req) //request queue add
 {
 	int req_present=0;
-	if(cobj->pending_req>=cobj->max_req-1) {return -1;} //No queue space to insert request. Should send failure to add to queue 
+	if(cobj->pending_req>=cobj->pending_max-1) {return -1;} //No queue space to insert request. Should send failure to add to queue 
 
 	//add cobj to request cache array.....increment counter then add self
 	
@@ -366,7 +407,7 @@ int rq_add(cache * cobj, request * req) //request queue add
 
 	//add req pointer to cobj req array...check for previous entries
 
-	req_present = queue_add(cobj, cobj->rq_start, req);
+	req_present = queue_add(cobj, cobj->pending_start, req);
 	cobj->pending_req++;
 
 
@@ -378,7 +419,7 @@ int rq_remove(cache * cobj, request * req, int choice)
 {
 	int t;
 	req->count--;
-	t = queue_remove(cobj,cobj->rq_start, req, choice); 	
+	t = queue_remove(cobj,cobj->pending_start, req, choice); 	
 	cobj->pending_req-=t;
 	
 }
@@ -387,8 +428,8 @@ int queue_len(cache * cobj)
 {
 	printf("\n%s: Queue_len checker called", cobj->name);
 	int j=0, k=0;
-	j = num_queue_elements(cobj->rq_start);
-	k = num_queue_elements(cobj->eq_start);
+	j = num_queue_elements(cobj->pending_start);
+	k = num_queue_elements(cobj->evict_start);
 	printf("\n%s: Request queue -> %d, Evict queue -> %d", cobj->name, j, k);
 }
 
@@ -446,8 +487,8 @@ int access(cache * cobj, request * req)
 	
 	//if(check_policy(cobj, req)==0) { return(access(cobj->next, req)); } //need to revamp error flags 
 	//else
-	if(cobj->pending_req>=cobj->max_req-1) return -1;   //checking if request queue can accomodate
-	if(cobj->pending_evict>=cobj->max_evict-1) return -1; //revamp error flags
+	if(cobj->pending_req>=cobj->pending_max-1) return -1;   //checking if request queue can accomodate
+	if(cobj->pending_evict>=cobj->evict_max-1) return -1; //revamp error flags
 
 	found_way = lookup(cobj, req);
 	
@@ -533,7 +574,7 @@ int access(cache * cobj, request * req)
 
 	//if(check_policy(cobj, req)==0) { return(access(cobj->next, req)); } //need to revamp error flags 
         //else
-        if(cobj->pending_evict>=cobj->max_evict-1) return -1; //Eviction operation checks if the current evict queue is full or not
+        if(cobj->pending_evict>=cobj->evict_max-1) return -1; //Eviction operation checks if the current evict queue is full or not
 	
 	
 	break;
@@ -599,8 +640,8 @@ int main()
 	//Cache declaration parameters
 	//l1 = init(name,blk_size,way,set,req_q,evict_q); //name, block size, way, set, request queue, evict queue
 
-	l1 = cache_init("L1", 64, 2, 4, 32, 32);
-	l2 = cache_init("L2", 64, 4, 16, 32, 32); //name, block size, way, set, request queue, evict queue
+	l1 = cache_init("L1", 64, 2, 4, 32, 32, 2, 2, 2);
+	l2 = cache_init("L2", 64, 4, 16, 32, 32, 2 , 2, 2); //name, block size, way, set, request queue, evict queue
 	
 	l1->next = l2;
 	
