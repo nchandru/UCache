@@ -38,11 +38,15 @@ struct cache
 	request * response_start;
 	request * pending_start;
 	request * evict_start;
+
 	int pending_evict;
+	int pending_req;
+	int pending_response;
+
 	int evict_max;
 	int pending_max;
+	int response_max;
 
-	int pending_req;
 	char * name;
 
 	unsigned long long int next_available;
@@ -234,7 +238,6 @@ int snapshot(cache * cobj)
 		printf("\nSET %d ",i);
 		for(j=0;j<cobj->ways;j++)
 			printf("|v=%d, d=%d| ", cobj->tag_block[i][j].valid, cobj->tag_block[i][j].dirty);
-
 	}
 
 	printf("\n-----------------------------\n\n");
@@ -244,7 +247,7 @@ return 0;
 cache * cache_init(char * name, long block_size, long ways, long sets, int pending_max, int evict_max,long lookup_latency, long read_latency, long write_latency)
 {
 	long i;
-        cache * cobj = malloc(sizeof(cache));
+	cache * cobj = malloc(sizeof(cache));
         cobj->block_size=block_size;
         cobj->ways = ways;
         cobj->sets = sets;
@@ -469,6 +472,23 @@ int dram_access()
 return 0;
 }
 
+int access_perm(cache * cobj, request * req)
+{
+/*
+	if(req->mode == x) // South Flow (Response request)
+	{
+		if(check_queue_len(cobj->response_start)<=response_max) return 1;
+		else return -1;
+	}
+
+	else //North flow (CPU to DRAM)
+	{
+		if(check_queue_len(cobj->pending_start)<=pending_max) return 1;
+		else return -1;
+	}	
+*/
+}
+
 int access(cache * cobj, request * req)
 {
 	
@@ -513,7 +533,6 @@ int access(cache * cobj, request * req)
 
 		if(temp==0) //No problem in adding to the queue		
 			{
-				
 				// Find a victim to replace the current request 
 				victim = find_victim(cobj, req);
 				printf("\nREQ added to the request queue. Victim found way: %ld", victim);
