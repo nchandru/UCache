@@ -10,6 +10,8 @@ queues.
 2) Generic queue removal and counter update etc is taken care by dispatcher and NOT by scheduler. 
 The scheduler only takes care of adding and its counters
 
+3) Configuration files for simulation and caches
+
 DONE
 1) When pushed to input queue. The queue looks at policy and automatically forwards to forward
 queue if WB packet is not inclusive. The higher levels dont maintain the policies. Only the 
@@ -17,8 +19,28 @@ lower levels do.
 
 2) The update function takes care of eviction packet. 
 
+//Check if a strcuture type of CPU can be added during cache init? Or somewhere
+//Need to update input counter only if the request was for a different cache block
+//Verbose modes
+
+Some global variables:
+
+1) nexta -> Parsed address stored here after calling parse(...)
+
+2) global_time -> Clock timestep for simulator
+
+3) breakpoint -> Defines where the code should break. Incremental
+0 -> Default
+1 -> Waits for keyboard input after every cycle
+
+4) debug -> For printing stuff. Incremental
+0 -> Default
+1 -> Cache snapshots on every cycle 
+2 -> Request data is dumped 
+
 **************************************************************************************************/
 
+#include "cache.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -27,97 +49,16 @@ lower levels do.
 #define pa_size 64
 #define MAX_LEVELS 3
 
-//Check if a strcuture type of CPU can be added during cache init? Or somewhere
-//Need to update input counter only if the request was for a different cache block
-//Verbose modes
-
-
-int print_bits(unsigned long long int);
-typedef struct request request;
-typedef struct cache cache;
-
-long find_victim(cache * , request *);
-
-request * req_init(int, unsigned long long int, int, int);
-
-typedef struct
-{
-	unsigned long addr;
-	int valid;
-	int dirty;
-	unsigned long counter;
-}blk;
-
-typedef struct
-{
-	unsigned long long int  set;
-	unsigned long long int tag; 
-
-}naddress;
-
-naddress * nexta;
-
-struct cache
-{
-	char * name;        
-	long block_size;
-        long ways;
-        long sets;
-	long miss;
-	long hit;
-	blk **tag_block;
-	struct cache *next;
-
-	request * response; //To buffer the response from lower levels
-	request * input; //To buffer up the inputs for lookup from higher levels. Inflight is also kep there, but pending would not be updated on duplicate
-	request * forward; //To forward/evict/writeback to lower levels
-	request * ret; //To respond to higher level cache with result of lookup
-
-	int pending_forward;
-	int pending_input;
-	int pending_response;
-	int pending_ret;
-
-	int max_forward;
-	int max_input;
-	int max_response;
-	int max_ret;
-
-	unsigned long long int tag_next;
-	unsigned long long int data_next;
-	
-	int find_victim_latency; 
-	int lookup_latency;
-	int read_latency;
-	int write_latency;
-};
-
-struct request
-{
-	//Also change dulicate_request if adding/removing variables from this structure
-	unsigned long long int addr;
-	cache** cache_queue;	
-	int count;
-	int ldst;
-	int mode; 
-	int forwarded;
-	int stage;
-	request * next;
-	long long int dispatch_time;
-	long long int completion_time;
-
-};
 
 
 int check_policy(cache * cobj, request * req)
 {
 //returns policy decision. 
-
+return 1;
 }
 
-//TODO: Can implement tail based insertion. Maybe for a later commit
-
 /**************************************************************************************************
+TODO: Can implement tail based insertion. Maybe for a later commit
 
 duplicate_request(...)
 
@@ -251,7 +192,7 @@ int queue_stats(cache * cobj)
 		else if(i==2) { ptr = cobj->response; qname = "Response queue"; } 
 		else if(i==3) { ptr = cobj->ret; qname = "Return queue"; }
 
-		printf("%s-%d", qname, num_queue_elements(ptr));
+		printf("%s - %d, ", qname, num_queue_elements(ptr));
 	}
 
 return 0;
@@ -616,9 +557,80 @@ cache * cache_init(char * name, long block_size, long ways, long sets)
 	
 	cobj->next = NULL;
 
+	cobj->tag_next=0;
+	cobj->data_next=0;
+
 	nexta = malloc(sizeof(naddress));
 
 return cobj;
+}
+
+/**************************************************************************************************
+
+query_init(...)
+
+This is to declare the interface between the CPU and the cache. The request is rapped in this 
+query object with indication of validity in input so that the cache latched it in. The ack is 
+generated to tell the CPU if the request was accepted. 
+
+1) req - the request packt for which the interface is made
+Type - Request *
+
+2) valid - To indicate if the query is valid in the current cycle
+Type - integer
+
+3) ack - Acknowledge by the cache - used by the CPU
+Type - int
+
+Returns:
+Type - Query *
+Query object
+
+**************************************************************************************************/
+
+query * query_init(request * req, int valid, int ack, unsigned long long int iptime)
+{
+	query * qobj = malloc(sizeof(query));
+	qobj->req=req;
+	qobj->valid=valid;
+	qobj->ack;
+	qobj->iptime = iptime;
+
+return qobj;
+}
+
+
+/**************************************************************************************************
+
+dump_request_data(...)
+
+To dump all parameters of a request to terminal.
+
+Arguments:
+req - The request object
+Type - Request *
+
+Returns:
+Nil
+
+**************************************************************************************************/
+
+
+int dump_request_data(request * req)
+{
+	if(req==NULL)
+	printf("\n----------\nRequest Data Dump\n----------\n");
+	printf("\nID: %llu", (unsigned long long int) req );
+	printf("\nAddress: ");
+	print_bits(req->addr);
+	printf("\nCount: %d", req->count);
+	printf("\nLDST: %d", req->ldst);
+	printf("\nMode: %d", req->mode);
+	printf("\nDispatch time: %llu", req->dispatch_time);
+	printf("\nCompletion time: %llu", req->completion_time);
+	
+
+return 0;
 }
 
 
@@ -681,11 +693,9 @@ request * req_init(int option, unsigned long long int addr, int ldst, int mode)
 			temp->cache_queue[i] = malloc(sizeof(cache));
 		temp->next = NULL;
 		
-		/*
-		//Timing parameters
-		temp->access_time = 0;
-		temp->return_time = 0;
-		*/
+		temp->dispatch_time = 0;
+		temp->completion_time = 0;
+
 	break;
 
 	case 0:
@@ -721,7 +731,7 @@ TODO
 int snapshot(cache * cobj)
 {
 	int i, j;
-	printf("\nCache snapshot of %s \n------------------------------\n", cobj->name);
+	printf("\n------------------------------\nCache snapshot of %s \n------------------------------\n", cobj->name);
 
 	for(i=0;i<cobj->sets;i++)
 	{
@@ -730,7 +740,9 @@ int snapshot(cache * cobj)
 			printf("|v=%d, d=%d| ", cobj->tag_block[i][j].valid, cobj->tag_block[i][j].dirty);
 	}
 
-	printf("\n-----------------------------\n\n");
+	queue_stats(cobj);
+
+	printf("\n-----------------------------\n");
 return 0;
 }
 
@@ -951,6 +963,7 @@ unsigned long long int max_cmp(unsigned long long int a, unsigned long long int 
 long optime(cache * cobj, request * req)
 {
 	//returns time required to do this function in the current cache block
+	return 3;
 }
 
 /**************************************************************************************************
@@ -966,13 +979,10 @@ Arguments:
 1) cobj - Cache structure object pointer
 Type - Cache *
 
-2) ptr - The starting pointer of the queue 
+2) req - The request under consideration
 Type - Request *
 
-3) req - The request under consideration
-Type - Request *
-
-4) queue_select - just an identifier to show what queue is being worked on
+3) queue_select - just an identifier to show what queue is being worked on
 Type - Integer
 
 0 -> Forward queue
@@ -987,7 +997,7 @@ TODO
 
 **************************************************************************************************/
 
-schedule_queue(cache * cobj, request * req, int queue_select)
+int schedule_queue(cache * cobj, request * req, int queue_select)
 {
 	request * insr;
 	long removed = 0;
@@ -1018,7 +1028,7 @@ schedule_queue(cache * cobj, request * req, int queue_select)
 
 			if(queue_lookup(cobj, cobj->input, req)==NULL) //Do all this only if the request is original 
 			{
-				insr->dispatch_time = cobj->tag_next + 1; // (+wire_latency?) 
+				insr->dispatch_time = max_cmp(global_time, cobj->tag_next) + 1; // (+wire_latency?) 
 				insr->completion_time = insr->dispatch_time + optime(cobj, insr);
 				cobj->tag_next = insr->completion_time;
 				cobj->pending_input++;
@@ -1183,8 +1193,7 @@ Return:
 
 **************************************************************************************************/
 
-
-int dispatch_queues(cache * cobj, unsigned long long int timestep, int queue_select)
+query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue_select)
 {
 	//look for types
 	request * req;
@@ -1447,15 +1456,21 @@ int dispatch_queues(cache * cobj, unsigned long long int timestep, int queue_sel
 		break;
 
 		case 3: //Return queue
-
-			if(cobj->pending_ret<=0) break; //Nothing to return 
+			if(cobj->pending_ret<=0) 
+			{
+				output->valid = 0;
+				break; //Nothing to return 
+			}
 
 			while(check_dispatch_ready(cobj->ret, timestep)!=0)
 			{
-
+				
 				cobj->pending_input-=queue_mremove(cobj, cobj->input, req);
 				req->count--;
-				schedule_queue(req->cache_queue[req->count], req, 2);		
+				if(req->cache_queue[req->count]!=NULL)
+					schedule_queue(req->cache_queue[req->count], req, 2);		
+				output->req = req;
+				output->valid = 1; 
 			}
 
 		break;
@@ -1470,6 +1485,131 @@ int dispatch_queues(cache * cobj, unsigned long long int timestep, int queue_sel
 
 }
 
+/**************************************************************************************************
+
+cpuio(...)
+
+Is for the interface between CPU and the cache (usually L1) defined in simulate(...). It looks 
+for output acknowledge and valid to decide if something is available on the bus or if the input 
+was queued in the cache. The values are update in the global input and output queues. 
+
+Arguments:
+timestep
+Type - unsigned long long int
+
+Return
+The query if any at the current timestep
+
+**************************************************************************************************/
+
+query * cpuio(unsigned long long int timestep)
+{
+	int i, flag=0;
+
+	if(qcount>=qmax) 
+	{
+		printf("\nQueries ended.. Exiting");
+		exit(0);
+	}
+
+	if(output->ack==0) { printf("\nStall"); }	
+
+	if(qlist[qcount]->iptime==timestep) flag=1;
+
+
+	if(output->valid==1) 
+	{
+		printf("\nGot something back: ");
+		dump_request_data(output->req);	
+	}
+
+	if(flag==0) 
+	{
+		return NULL;
+	}
+	else
+	{
+		qcount++;
+		return qlist[qcount-1];
+	}  
+}
+
+
+/**************************************************************************************************
+
+simulate(...)
+
+1) cobj - Cache structure pointer 
+Type - Cache *
+
+TODO
+1) DRAM dispatch
+2) Return from return queue of L1
+
+**************************************************************************************************/
+
+int simulate(cache * cobj)
+{
+	input = malloc(sizeof(query));
+	output = malloc(sizeof(query));
+	qcount =0;
+
+	int temp;
+	cache * prop = malloc(sizeof(cache));
+	prop = cobj;
+
+	while(1)
+	{
+		printf("\nTimestep: %llu", global_time);
+
+		output->ack = 1;
+		input = cpuio(global_time);
+		while(prop!=NULL) 
+		{
+			if((input!=NULL) && (prop==cobj) && (input->valid==1) && (input->iptime>=global_time)) //CHECK equality in the last condition. Should it be ==?
+			{
+				if(access_perm(cobj)!=0) 
+					{
+						temp=0;					
+					}
+				else
+				{
+					temp=1;
+					schedule_queue(cobj, input->req, 1); //Inserting to input queue of cache if request was valid at its dispatch time
+					input->valid=0;
+				}
+			}
+			dispatch_queues(prop, global_time, 0); //Forward
+			dispatch_queues(prop, global_time, 1); //Input
+			dispatch_queues(prop, global_time, 2); //Response
+			if(prop==cobj) 
+			{
+				output = dispatch_queues(prop, global_time, 3); //Return //TODO Need to return here
+				output->ack = temp;
+			}
+			else 
+			{	
+				dispatch_queues(prop, global_time, 3);
+			}
+			if(debug>=1) snapshot(prop);
+			if(breakpoint>=1) getchar();
+			prop = prop->next;
+		}	
+		cpuio(global_time);
+		prop = cobj;
+		global_time++;
+
+		if(global_time>=end_time) return 0;
+	}
+}
+
+/**************************************************************************************************
+dram_access(...)
+
+TODO
+
+**************************************************************************************************/
+
 int dram_access()
 {
 		printf("\nRequest to DRAM\n");
@@ -1477,6 +1617,24 @@ int dram_access()
 return 0;
 }
 
+
+/**************************************************************************************************
+access_perm(...)
+
+To get permission from the cache if a block can be inserted. This is open to more type of policies. 
+At current commit, it grants permission if there's atleast one free block in all four queues.
+
+Arguments
+
+cobj - Cache structure pointer object
+Type - Cache *
+
+Returns 
+Type - Integer
+
+0 -> Permission granted
+1 -> Permission denied
+**************************************************************************************************/
 
 int access_perm(cache * cobj)
 {
@@ -1486,21 +1644,63 @@ assert(num_queue_elements(cobj->forward)==cobj->pending_forward);
 assert(num_queue_elements(cobj->response)==cobj->pending_response);
 assert(num_queue_elements(cobj->ret)==cobj->pending_ret);
 
-
-if((cobj->pending_input<cobj->max_input) && (cobj->pending_forward<cobj->max_forward) && (cobj->pending_response<cobj->max_response) &&(cobj->pending_ret<cobj->max_ret)) return 1;
-else return 0;		
+if((cobj->pending_input<cobj->max_input) && (cobj->pending_forward<cobj->max_forward) && (cobj->pending_response<cobj->max_response) &&(cobj->pending_ret<cobj->max_ret)) return 0; //Return zero if approved
+else return 1; //Return 1 if denied		
 }
 
+/**************************************************************************************************
 
-unsigned long long int gen_addr(cache * cobj, unsigned long long int set, unsigned long long int tag)
+gen_addr(...)
+
+This is a function used for debugginf purposes. The function returns an address for a particular
+cache's set and tag. Maybe overkilling with the argumentt types. 
+
+Arguments:
+1) cobj - Cache structure pointer object
+Type - Cache *
+
+2) block - the block offset
+Type - Unsigned long long int
+
+3) set - the set number
+Type - Unsigned long long int
+
+4) tag - The tag value
+Type - unisgned long long int
+
+Returns
+Type - Unisgned long long int
+Address corresponding to the passed arguments
+
+**************************************************************************************************/
+
+unsigned long long int gen_addr(cache * cobj, unsigned long long int block, unsigned long long int set, unsigned long long int tag)
 {
-	if(set>cobj->sets-1) { printf("\n%s: Addressing error. SET out of bounds.\n", cobj->name); exit(0);}
+	if((set>cobj->sets-1) || (block>cobj->block_size-1)) { printf("\n%s: Addressing error. Out of bounds.\n", cobj->name); exit(0);}
 
-	int tag_bits = pa_size -((log(cobj->sets)/log(2))+(log(cobj->block_size)/log(2)));
-	int set_bits = log(cobj->block_size)/log(2);
-	
-	return ((tag<<(pa_size-tag_bits))|(set<<set_bits));
+	int tag_bit_shift = pa_size -((log(cobj->sets)/log(2))+(log(cobj->block_size)/log(2)));
+	int set_bit_shift = log(cobj->block_size)/log(2);
+
+	return ((tag<<(pa_size-tag_bit_shift))|(set<<set_bit_shift)|(block));
 }
+
+
+/**************************************************************************************************
+print_bits(...) 
+
+TODO printing in reverse order
+
+To print the bit representation of a passed argument
+
+Arguments:
+add - Addres (any value) to be printed
+Type - unsigned long long int
+
+Returns 
+Nil
+
+**************************************************************************************************/
+
 
 int print_bits(unsigned long long int add)
 {
@@ -1518,412 +1718,47 @@ int print_bits(unsigned long long int add)
 return 0;
 }
 
+
+/**************************************************************************************************
+
+manual_set(...)
+
+used for configuring a cache block manually. This also used for debugging.
+
+Arguments:
+
+1) cobj - Cache structure pointer object
+Type - Cache *
+
+2) set_num - The set number under consideration
+Type - long
+
+3) way_num - Way number under consideration
+Type - long
+
+4) tag_num - The tag number under consideration
+Type - long
+
+5) Valid - The valid bit to be set
+Type - Int
+
+6) dirty - The dirty bit to be set
+Type - Int
+
+Returns 
+Nil
+
+**************************************************************************************************/
+
+
 int manual_set(cache * cobj, long set_num, long way_num, long tag_num, int valid, int dirty)
 {
+        if(set_num>cobj->sets-1) { printf("\n%s: Addressing error. Out of bounds.\n", cobj->name); exit(0);}
+	if(debug>=1) printf("\n%s Manual set performed with address: ", cobj->name);
 	cobj->tag_block[set_num][way_num].valid = valid;
 	cobj->tag_block[set_num][way_num].dirty = dirty;
-        cobj->tag_block[set_num][way_num].addr = gen_addr(cobj, set_num, tag_num);
-	print_bits(gen_addr(cobj, set_num, tag_num));
-}
-
-
-int queue_len(cache * cobj)
-{
-        //TODO Add all queue to this. And maybe add this to snapshot too
-        printf("\n%s: Queue_len checker called", cobj->name);
-        int j=0, k=0;
-        j = num_queue_elements(cobj->input);
-        k = num_queue_elements(cobj->forward);
-        printf("\n%s: Request queue -> %d, Evict queue -> %d", cobj->name, j, k);
-}
-
-
-int main()
-{
-	unsigned long long int addr;
-	int ldst, mode,	req_q, evict_q, valid, dirty;
-	long blk_size, way, set;
-	char * name;
-
-	int set_num, tag_num, way_num;
-
-	cache *l1; 
-	cache *l2;
-
-	//Cache declaration parameters
-	//l1 = init(name,blk_size,way,set,req_q,evict_q); //name, block size, way, set, request queue, evict queue
-
-	l1 = cache_init("L1", 64, 2, 4);
-	l2 = cache_init("L2", 64, 4, 16); //name, block size, way, set, request queue, evict queue
-	
-	l1->next = l2;
-	
-	//printf("\nResting state");
-
-	//snapshot(l1);	
-	//snapshot(l2);
-	
-	//temporary test factors
-	set_num = 9;
-	tag_num = 15;
-	way_num = 2;
-	valid = 1;
-	dirty = 0;
-
-	manual_set(l2, set_num, way_num, tag_num, valid, dirty);
-	manual_set(l2, set_num, way_num-1, tag_num+15, valid, dirty);
-
-	printf("\nManual set for L2 performed");
-
-	snapshot(l1);
-	snapshot(l2);
-	
-	//Request declaration	
-	addr = gen_addr(l2, set_num, tag_num);
-	ldst = 0;
-	mode = 0;
-
-	request * req;
-		
-	req = req_init(1, addr, ldst, mode);	
-
-	access(l1, req);
-
-	queue_len(l1); //See if anything in the queue of l1
-	getchar();
-		
-	snapshot(l1);
-	snapshot(l2);
-
-	printf("\nFirst access complete");
-	
-	addr = gen_addr(l2, set_num, tag_num+15);
-	req=req_init(1, addr, ldst, mode);
-	
-	printf("\nSecond access with address: ");
-	
-	print_bits(addr);
-	
-	//access(l1, req);
-	
-	printf("\nSecond access complete");
-	
-	//snapshot(l1);
-	//snapshot(l2);
-
-
-	printf("\n\n\n");
-
+        cobj->tag_block[set_num][way_num].addr = gen_addr(cobj, 0,  set_num, tag_num);
+	if(debug>=1) print_bits(gen_addr(cobj, 0, set_num, tag_num));
 return 0;
 }
 
-
-/*
-long lookup(cache * cobj, request * req)
-{
-	printf("\n%s: Inside lookup", cobj->name);
-	//print_bits(req->addr);
-	unsigned long long int ones = 0xFFFFFFFFFFFFFFFF;
-	long i;
-	parse(cobj, req);
-	if(nexta->set>=cobj->sets) { printf("\n%s: lookup() Out of bounds SET accessed... Exiting", cobj->name); return -2; } //exit on incorrect argument passed
-	int block_bits = log(cobj->block_size)/log(2);
-
-	printf("\n%s: SET lookup is - %llu", cobj->name, nexta->set );	
-	for(i=0; i<cobj->ways; i++)
-		if(( (cobj->tag_block[nexta->set][i].addr) & (ones<<block_bits)) == ((req->addr) & (ones<<block_bits)) && (cobj->tag_block[nexta->set][i].valid==1)) return i; //return the WAY where it was found
-
-return -1; //None found. Return negative one
-}
-
-long find_victim(cache * cobj, request * req)
-{
-	printf("\n%s: Inside find_victim", cobj->name);
-	//print_bits(req->addr);
-
-	//TODO: Recheck this too. Return with best bet
-	parse(cobj, req);
-	int set = nexta->set;
-	unsigned long max = 0;
-	long i,way_id=-1;
-        if(set>=cobj->sets) { printf("\n%s: find_victim() Out of bounds SET accessed... Exiting", cobj->name); return -2; } //exit on incorrect argument passed
-	
-	for(i=0; i<cobj->ways; i++)
-	{
-		if(cobj->tag_block[set][i].valid==0) { return i; } //if any invalid block present, it becomes the victim  	
-
-		if(max<=cobj->tag_block[set][i].counter) //find the max counter in the objects
-		{
-			max=cobj->tag_block[set][i].counter;
-			way_id=i;
-		}
-
-	}
-	return way_id;	
-}
-
-
-int update(cache * cobj, request * req, long way) //to update the SET counters when a cache block in a particular WAY is accessed for LRU
-{
-	//MAJOR responsibility here. 
-	// ppp Add cases of changinf valid/dirty bits here
-
-	printf("\n%s: Inside update()", cobj->name);
-
-	parse(cobj, req);
-	int set = nexta->set;
-	if(set>=cobj->sets) { printf("\n%s: update() Out of bounds SET accessed... Exiting", cobj->name); return -2; } //exit on incorrect argument passed
-
-	switch(req->mode)
-	{
-		case 0: //Normal LD/ST
-			if(req->ldst==1) //ST operation
-				cobj->tag_block[set][way].dirty=1;
-			cobj->tag_block[set][way].valid = 1;
-			cobj->tag_block[set][way].addr = req->addr;
-		break;
-
-		case 1: //Eviction
-
-		break;
-
-		case 2: //Write back
-
-		break;
-
-		default:
-			printf("\nInvalid mode selected for request...Exiting");
-			exit(0);
-		break;
-	}
-
-	long i;
-	
-//	print_count_values(cobj, set);
-
-	for(i=0; i<cobj->ways; i++)
-	{
-		if(i==way) cobj->tag_block[set][i].counter=0;
-		else cobj->tag_block[set][i].counter++;
-	}
-	
-//	print_count_values(cobj,set);
-
-return 1;
-}
-
-
-int print_count_values(cache* cobj, long set) //For dumping the counters per set of a cache
-{
-	if(set>=cobj->sets) { printf("\n%s: Out of bounds SET accessed... Exiting", cobj->name); return -2; } //exit on incorrect argument passed
-	
-	long i;
-	for(i=0; i<cobj->ways; i++)
-		printf("\nWay %ld Count: %lu", i, cobj->tag_block[set][i].counter);
-}
-
-int eq_add(cache * cobj, request * req)
-{
-	
-	if(cobj->pending_forward>=cobj->max_forward-1) {return -1;}
-	queue_add(cobj, cobj->forward, req);
-	cobj->pending_forward++;
-}
-
-int eq_remove(cache * cobj, request * req)
-{
-	queue_remove(cobj,cobj->forward, req, 0);
-	cobj->pending_forward--;
-}
-
-int rq_add(cache * cobj, request * req) //request queue add
-{
-	int req_present=0;
-	if(cobj->pending_input>=cobj->max_input-1) {return -1;} //No queue space to insert request. Should send failure to add to queue 
-
-	//add cobj to request cache array.....increment counter then add self
-	
-	req->count++;
-	req->cache_queue[req->count] = cobj; //adding the cache object to the request array
-
-	//add req pointer to cobj req array...check for previous entries
-
-	req_present = queue_add(cobj, cobj->input, req);
-	cobj->pending_input++;
-
-
-//printf("\nreq_present being returned from rq_add = %d", req_present);
-return req_present;
-}
-
-int rq_remove(cache * cobj, request * req, int choice) 
-{
-	int t;
-	req->count--;
-	t = queue_remove(cobj,cobj->input, req, choice); 	
-	cobj->pending_input-=t;
-	
-}
-
-
-int queue_len(cache * cobj)
-{
-	//TODO Add all queue to this. And maybe add this to snapshot too
-	printf("\n%s: Queue_len checker called", cobj->name);
-	int j=0, k=0;
-	j = num_queue_elements(cobj->input);
-	k = num_queue_elements(cobj->forward);
-	printf("\n%s: Request queue -> %d, Evict queue -> %d", cobj->name, j, k);
-}
-
-int insert(cache * cobj, request * req)
-{
-	//divide this into if its a cache or CPU 
-
-	int victim;
-	//update the tag arrays
-	
-	rq_remove(cobj, req, 1);
-	victim = find_victim(cobj, req);
-	update(cobj, req, victim); // ppp this should also take care of policy.... Also val/dirty stuff
-}
-
-
-int access_return(request * req)
-{
-	printf("\nInside access return");
-	int i;
-	for(i=req->count; i>=0; i--)
-	{
-		insert(req->cache_queue[i], req);
-	}
-}
-
-int check_policy(cache * cobj, request * req)
-{
-	//To check if the current cache is inclusive of the cahce pointers in the request cache_queue
-
-}
-
-int access(cache * cobj, request * req)
-{
-	
-	long found_way, victim;
-	int temp, flag=0;
-        request * rq;	
-
-	//check if this cache requires the headache of the request (from policy)
-
-
-	switch(req->mode){
-
-	case 0: //Normal load/store
-	printf("\n%s: LD/ST request access at cache with request address: ", cobj->name);
-	//print_bits(req->addr);
-	
-	//if(check_policy(cobj, req)==0) { return(access(cobj->next, req)); } //need to revamp error flags 
-	//else
-	if(cobj->pending_input>=cobj->max_input-1) return -1;   //checking if request queue can accomodate
-	if(cobj->pending_forward>=cobj->max_forward-1) return -1; //revamp error flags
-
-	found_way = lookup(cobj, req);
-	
-	if(found_way == -2) { printf("Error in value passed... Exiting"); exit(0);}
-	
-	else if(found_way>=0) //Cache hit
-	{
-		printf("\n%s: Cache HIT", cobj->name);
-		update(cobj, req, found_way);
-		access_return(req);
-		return 1;
-	}
-
-	else //Cache miss
-	{
-		printf("\n%s: Cache MISS", cobj->name);
-		flag = 0;
-		temp = rq_add(cobj,req);
-
-		queue_len(cobj);	//Checking if the request was added to the queue
-		getchar();
-
-		if(temp==0) //No problem in adding to the queue		
-			{
-				// Find a victim to replace the current request 
-				victim = find_victim(cobj, req);
-				printf("\nREQ added to the request queue. Victim found way: %ld", victim);
-
-				parse(cobj, req);
-				
-				if(cobj->tag_block[nexta->set][victim].valid!=0) //Add to queue only if the victim was valid
-				{	
-					flag = 1;
-					cobj->tag_block[nexta->set][victim].valid=0;
-					rq = req_init(1, cobj->tag_block[nexta->set][victim].addr, 1, 1); //third argument indicates eviction 
-					eq_add(cobj, rq);
-					printf("\n%s: SET %llu WAY %ld added to eviction queue", cobj->name, nexta->set, victim);
-				}
-				
-				if(cobj->next==NULL)
-				{
-					dram_access();
-					return 0; //Need to integrate with USIMM later
-				}
-
-
-
-				temp = access(cobj->next, req); 
-				if(temp == -1) 
-				{ 
-					rq_remove(cobj, req, 0); //Only last added queue for an address is removed. Under the assumption that overflow is taken care of by the CPU and not the intermediate caches
-					//If the next level can't access. Repopulate the invlaidated address
-					
-					if(flag==1) //Do the removal only if it was added in the first place
-					{
-					eq_remove(cobj, rq);
-					cobj->tag_block[nexta->set][victim].valid = 1;
-					cobj->tag_block[nexta->set][victim].addr=rq->addr;
-					free(rq); 
-					printf("\n%s: SET %llu WAY %ld block readded from eviction queue due to lower level cache unavailability", cobj->name, nexta->set, victim);
-					}
-
-					return -1; 
-				}//see if this return can be reiisued later from higher level cache
-
-				else return 1;
-			}
-		else if(temp==-1)
-		{
-			printf("\n%s: Request queue FULL. Cannot accept more\n",cobj->name);
-			return -1; //redundant checking I believe
-		}
-		else 
-		{
-		return -2; //request was added to the queue, but the address of the request already existed so new request was not propagated
-		}
-	}
-
-	break;
-
-	case 1: //Eviction
-
-	//if(check_policy(cobj, req)==0) { return(access(cobj->next, req)); } //need to revamp error flags 
-        //else
-        if(cobj->pending_forward>=cobj->max_forward-1) return -1; //Eviction operation checks if the current evict queue is full or not
-	
-	
-	break;
-
-	case 2: //Write back
-
-	break;
-
-	default:
-	printf("\n Wrong mode set for request....");
-	break;
-
-}//end switch case
-
-}//end access
-
-*/
