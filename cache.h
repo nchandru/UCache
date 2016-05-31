@@ -28,10 +28,11 @@ query * output;
 
 struct query
 {
-	request * req;
-	int valid;
-	int ack;
-	unsigned long long int iptime;
+	request * req; //the request object this query points to 
+	int valid; //To show that something on the line is valid
+	int ack; //To show the ACK of the previous instruction that was passed 
+	int highest; //To show if this is at the highest or lowest level of the cache
+	unsigned long long int iptime; //To designate the time of input 
 };
 
 struct blk

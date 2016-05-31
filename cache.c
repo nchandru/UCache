@@ -65,7 +65,6 @@ duplicate_request(...)
 Used to duplicate a request object. 
 
 IMP: Need to update this for all the data variables in the request packet. 
-TODO Need to see if this can be done using memory Syscalls. Memset like?
 
 Arguments:
 
@@ -88,17 +87,16 @@ request * duplicate_request(request * to, request * from)
 	//request * req_init(int choice, unsigned long long int addr, int ldst, int mode)
 	to = req_init(1, from->addr, from->ldst, from->mode);
 	
-	for(i=0; i<=from->count; i++)
-		to->cache_queue[i]=from->cache_queue[i];
+	//for(i=0; i<=from->count; i++) //TODO for multiple cache heirarchy
+	//	to->cache_queue[i]=from->cache_queue[i];
 	
-	to->mode = from->mode;
-	to->next = NULL;
+	to->next = from->next;
 
-/*	//Timing aliasing
+        to->count = from->count;
+	to->stage = from->stage;
+        to->dispatch_time = from->dispatch_time;
+        to->completion_time = from->completion_time;
 
-	to->dispatch_time=from->access_time;
-	to->return_time=from->return_time;
-*/
 return to;
 }
 
@@ -137,12 +135,14 @@ int queue_add(cache * cobj, request* ptr, request * req) //TODO: Error checking 
 	int set_bits = log(cobj->block_size)/log(2);
 	unsigned long long int ones = 0xFFFFFFFFFFFFFFFF;
 	
+	if(debug>=4) printf("\n%llu: %s - Queue element added with dispatch_time: %llu", global_time, cobj->name, req->dispatch_time);
+
 	if(temp == NULL) //First element is being added. i.e No element in the queue
 	{
 		printf("\nFirst element was added");
 		req->next = NULL;
 		ptr->next = req;
-		if(debug>=5) printf("\n%llu: %s - Element added and number of duplicates returned: %d", global_time, cobj->name, req_present);
+		if(debug>=4) printf("\n%llu: %s - Element added and number of duplicates returned: %d", global_time, cobj->name, req_present);
 		return req_present; //successfully added
 	}
 
@@ -405,15 +405,18 @@ The number of requests that are ready to go for the current timestep
 
 int check_dispatch_ready(request * req, unsigned long long int timestep)
 {
-	request * ptr =  malloc(sizeof(request));
+	request * ptr;
 	ptr = req;
-
 	if(ptr->next == NULL) return 0;
-
 	while(ptr->next!=NULL)
 	{
-		if(ptr->dispatch_time==timestep) return 1;
 		ptr = ptr->next;
+		printf("\nDispatch time of current traversal element is: %llu", ptr->dispatch_time);
+		if(ptr->dispatch_time==timestep) 
+		{
+			printf("\n%llu: check_dispatch_ready - Queue element ready for dispatch found", global_time);
+			return 1;
+		}
 	}
 
 return 0;
@@ -628,6 +631,7 @@ int dump_request_data(request * req)
 	printf("\nCount: %d", req->count);
 	printf("\nLDST: %d", req->ldst);
 	printf("\nMode: %d", req->mode);
+	printf("\nStage: %d", req->stage);
 	printf("\nDispatch time: %llu", req->dispatch_time);
 	printf("\nCompletion time: %llu", req->completion_time);
 	
@@ -738,10 +742,11 @@ int snapshot(cache * cobj)
 	{
 		printf("\nSET %d ",i);
 		for(j=0;j<cobj->ways;j++)
-			printf("|v=%d, d=%d| ", cobj->tag_block[i][j].valid, cobj->tag_block[i][j].dirty);
+			printf("|v=%d, d=%d, %lu| ", cobj->tag_block[i][j].valid, cobj->tag_block[i][j].dirty, cobj->tag_block[i][j].counter);
 	}
 
 	queue_stats(cobj);
+	printf("\nNext Tag Available: %llu, Next Data Available: %llu", cobj->tag_next, cobj->data_next);
 
 	printf("\n-----------------------------\n");
 return 0;
@@ -1032,13 +1037,13 @@ int schedule_queue(cache * cobj, request * req, int queue_select)
 			{
 				if(debug>=4) printf("\n%llu: %s - Request inserted is original", global_time,cobj->name);
 				insr->dispatch_time = max_cmp(global_time, cobj->tag_next) + 1; // (+wire_latency?) 
-				insr->completion_time = insr->dispatch_time + optime(cobj, insr);
+				insr->completion_time = insr->dispatch_time + optime(cobj, insr); //optime for tag lookup
 				cobj->tag_next = insr->completion_time;
 				cobj->pending_input++;
 			}
 			
 			if(debug>=3) printf("\n%llu: %s - Inserting to Input queue", global_time, cobj->name);	
-			if(debug>=4) printf("\nTag alloted is: %llu. New tag avail is %llu.", insr->dispatch_time, cobj->tag_next);
+			if(debug>=4) printf("\nDispatch alloted is: %llu. New tag avail is %llu.", insr->dispatch_time, cobj->tag_next);
 			queue_add(cobj, cobj->input, insr);
 //			free(req); //TODO check later if this indeed is this function's headache
 		break;
@@ -1207,6 +1212,7 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 	request * req;
 	request * lookupreq;
 	request * insr;
+	request * dummy; //For the return queue
 	long lookup_way, victim, type;
 	
 	switch(queue_select)
@@ -1217,7 +1223,8 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 			if(debug>=3) printf("\n%llu: %s - Dispatching Forward queue", global_time, cobj->name);	
 			assert(cobj->pending_forward == num_queue_elements(cobj->forward));
 	
-		
+			if(debug>=4) printf("\n%llu: %s - Checking dispatch ready from forward queue", global_time, cobj->name);
+
 			while(check_dispatch_ready(cobj->forward, timestep)!=0)	//To flush out all of the requests ready to go at current time step
 			{
 				if(cobj->pending_forward<=0) break; // Redundant actually
@@ -1251,13 +1258,14 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 		case 1: // Input queue
 			if(cobj->pending_input<=0) break; //Nothing in the input queue
 			if(debug>=3) printf("\n%llu: %s - Dispatching Input queue", global_time, cobj->name);	
+			if(debug>=10) printf("\n%llu: %s - Checking dispatch ready from input queue", global_time, cobj->name);
 
 			while(check_dispatch_ready(cobj->input, timestep)!=0)
 			{
 				if(debug>=2) printf("\n%llu: %s - Someone is ready in the input dispatch queue", global_time, cobj->name);
 				if(cobj->pending_input<=0) break; //Again, redundant
 				
-				printf("\n Gonna perform lookup now");
+				if(debug>=3) printf("\n%llu: %s - Going perform lookup now", global_time, cobj->name);
 				lookup_way = -1;
 				req = queue_remove_timestep(cobj->input, timestep, 1); //Retain and return from input queue
 				
@@ -1269,12 +1277,12 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 					
 					else if(lookup_way>=0) //Cache hit
 					{
-						if(debug>=4) printf("\n%llu: %s - Its a tag hit!", global_time, cobj->name);
-						req->dispatch_time = cobj->data_next +1; //optime should look at stage == 0 and return a lookup time for this cache
+						if(debug>=3) printf("\n%llu: %s - Its a tag hit!", global_time, cobj->name);
+						req->dispatch_time = max_cmp(req->completion_time, max_cmp(cobj->data_next, global_time)) + 1; 
 						req->stage=1;
-						req->completion_time = req->dispatch_time + optime(cobj, req); //optime should look at stage and operation to decide
+						req->completion_time = req->dispatch_time + optime(cobj, req); //optime for data lookup
 						cobj->data_next = req->completion_time;
-						if(debug>=4) printf("\n Dispatch alloted is: %llu. New data avail is %llu.", insr->dispatch_time, cobj->data_next);
+						if(debug>=4) printf("\nDispatch alloted is: %llu. New data avail is %llu.", req->dispatch_time, cobj->data_next);
 					}
 
 					else //Looking into forward queue now
@@ -1291,7 +1299,7 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 
 						else //Miss
 						{
-							if(debug>=4) printf("\n%llu: %s - Its a tag MISS", global_time, cobj->name);
+							if(debug>=3) printf("\n%llu: %s - Its a tag MISS", global_time, cobj->name);
 							if(req->mode==0) 
 							{
 								req->count++;
@@ -1314,11 +1322,15 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 		
 				else if(req->stage==1) //Bank hit - Data handling 
 				{	//Normal LD/ST
-					lookup_way = lookup(cobj, req);
-					update(cobj, req, lookup_way); //Update sees ldst, mode and stage to update validity, dirty, counters for LRU
-					if(req->ldst==0) //If its a load, youneed to return it back
+					//The following two lines of code should be done @ dispatch ready of return queue
+					//lookup_way = lookup(cobj, req);
+					//update(cobj, req, lookup_way); //Update sees ldst, mode and stage to update validity, dirty, counters for LRU
+					if(debug>=3) printf("\n%llu: %s - Data handling under progress", global_time, cobj->name);
+					if(req->ldst==0) //If its a load, you need to return it back
 					{
 						//update properties of req
+						if(debug>=4) printf("\nIt was a LD/ST HIT. Pushing request back to return queue");
+						req->dispatch_time=0;
 						schedule_queue(cobj, req, 3); //Pushing to return queue
 					}
 
@@ -1367,13 +1379,13 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 				
 
 			}
-	
 		break;
 
 		case 2: //Response queue
 
 				if(cobj->pending_response<=0) break;
 				if(debug>=3) printf("\n%llu: %s - Dispatching Response queue", global_time, cobj->name);	
+				if(debug>=10) printf("\n%llu: %s - Checking dispatch ready from response queue", global_time, cobj->name);
 
 				while(check_dispatch_ready(cobj->response, timestep)!=0)
 				{
@@ -1388,7 +1400,7 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 
                                         else if(lookup_way>=0) //Cache hit
                                         {
-                                                req->dispatch_time = cobj->data_next +1; //optime should look at stage == 0 and return a lookup time for this cache
+                                                req->dispatch_time = max_cmp(global_time, cobj->data_next) +1; //optime should look at stage == 0 and return a lookup time for this cache
                                                 req->stage=4;
                                                 req->completion_time = req->dispatch_time + optime(cobj, req); //optime should look at stage and operation to decide
                                                 cobj->data_next = req->completion_time;
@@ -1479,17 +1491,27 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 				break; //Nothing to return 
 			}
 
-			if(debug>=3) printf("\n%llu: %s - Dispatching Return queue", global_time, cobj->name);	
-
+			if(debug>=3) printf("\n%llu: %s - Dispatching Return queue", global_time, cobj->name);			
+			if(debug>=10) printf("\n%llu: %s - Checking dispatch ready from return queue", global_time, cobj->name);
+		
 			while(check_dispatch_ready(cobj->ret, timestep)!=0)
 			{
+				//lookup_way = lookup(cobj, req);
+				//update(cobj, req, lookup_way); //Update sees ldst, mode and stage to update validity, dirty, counters for LRU
+				
+				req = queue_remove_timestep(cobj->ret, timestep, 0); //Remove and return
 				
 				cobj->pending_input-=queue_mremove(cobj, cobj->input, req);
-				req->count--;
-				if(req->cache_queue[req->count]!=NULL)
-					schedule_queue(req->cache_queue[req->count], req, 2);		
+				
+				if(debug>=4) printf("\nReturn time for a few packets has arrived. Updating and removing them from input queue.");
+				
+				//req->count--;  //TODO make this for multiple cache heirarchies
+				//if(req->cache_queue[req->count]!=NULL)
+				//	schedule_queue(req->cache_queue[req->count], req, 2);		
+				
 				output->req = req;
-				output->valid = 1; 
+				output->valid = 1;
+				req->dispatch_time = 0;
 			}
 
 		break;
@@ -1519,6 +1541,8 @@ Type - unsigned long long int
 Return
 The query if any at the current timestep
 
+TODO File handling integration
+
 **************************************************************************************************/
 
 query * cpuio(unsigned long long int timestep)
@@ -1527,28 +1551,28 @@ query * cpuio(unsigned long long int timestep)
 
 	if(qcount>=qmax) 
 	{
-		printf("\nQueries ended.. Exiting");
+		printf("\nQueries ended.. Exiting"); //Just a redundancy in terms of exiting the program
 		exit(0);
 	}
 
-	if(output->ack==0) { printf("\nStall"); }	
+	if(output->ack==0) { printf("\nStall"); } //TODO Need to perform stall operation. May need file handling here	
 
-	if(qlist[qcount]->iptime==timestep) flag=1;
+	if(qlist[qcount]->iptime==timestep) flag=1; //If some request is scheduled for current timestep
 
-	if(output->valid==1) 
+	if(output->valid==1 && output->highest==1) 
 	{
-		printf("\nGot something back: ");
+		//This area is when a particular request is available in the queue
+		printf("\nGot something back:");
 		dump_request_data(output->req);	
+		output->valid = 0;
 	}
 
 	if(flag==0) 
-	{
 		return NULL;
-	}
 	else
 	{
 		qcount++;
-		return qlist[qcount-1];
+		return qlist[qcount-1]; //This should actually be a function to generate a query from the current instruction of the input file 
 	}  
 }
 
@@ -1570,7 +1594,7 @@ int simulate(cache * cobj)
 {
 	input = malloc(sizeof(query));
 	output = malloc(sizeof(query));
-	qcount =0;
+	qcount = 0;
 
 	int temp=1;
 	cache * prop = malloc(sizeof(cache));
@@ -1605,15 +1629,19 @@ int simulate(cache * cobj)
 			printf("\n2");
 			dispatch_queues(prop, global_time, 2); //Response
 			printf("\n3");
-			if(prop==cobj)
+			if(prop==cobj) //If the working object is highest level of cache, May need to consider the 
 			{
-				output = dispatch_queues(prop, global_time, 3); //Return //TODO Need to return here. ALso this works only for L1
+				output->highest = 1;
+				dispatch_queues(prop, global_time, 3); //Return //TODO Need to return here. ALso this works only for L1
 				output->ack = temp;
 			}
 			else 
 			{	
+				output->highest = 0;
 				dispatch_queues(prop, global_time, 3);
 			}
+
+			printf("\n4");
 			if(debug>=1) snapshot(prop);
 			if(breakpoint>=1) getchar();
 			prop = prop->next;
