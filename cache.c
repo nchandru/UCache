@@ -534,6 +534,12 @@ cache * cache_init(char * name, long block_size, long ways, long sets)
 
 	nexta = malloc(sizeof(naddress));
 
+
+	cobj->lookuptime = 1;
+	cobj->loadtime = 2;
+	cobj->storetime = 3;
+	cobj->victimtime = 1;
+	
 return cobj;
 }
 
@@ -938,6 +944,43 @@ unsigned long long int max_cmp(unsigned long long int a, unsigned long long int 
 long optime(cache * cobj, request * req)
 {
 	//returns time required to do this function in the current cache block
+	
+	switch(req->stage)
+	{
+	//Time for:
+
+	case 0: //Tag lookup from input queue
+
+		return cobj->lookuptime;
+	break;
+
+
+	case 1: //Data access (LOAD)
+
+		return cobj->loadtime;
+	break;
+
+	case 6: //Data access (STORE)
+
+		return cobj->storetime;
+	break;
+
+	case 21: //Looking up and finding a victim
+
+		return cobj->victimtime;	
+	break;
+
+	case 22: //Data eviction (Fetch and write)
+
+		return cobj->loadtime + cobj->storetime;
+	break;
+	
+	default:
+		assert(0);
+	break;
+
+	}
+
 	return 3;
 }
 
@@ -1038,7 +1081,7 @@ int schedule_queue(cache * cobj, request * req, int queue_select)
 
 			insr = duplicate_request(insr, req);
 			insr->dispatch_time = max_cmp(max_cmp(global_time,req->dispatch_time), find_max_dispatch(cobj->response))+1; //Queue traversal could be avoided
-			insr->completion_time = insr->dispatch_time + optime(cobj,req); //Doesn't matter actually
+//			insr->completion_time = insr->dispatch_time + optime(cobj,req); //Doesn't matter actually
 			//cobj->data_next = insr->completion_time;
 			insr->stage=21;
 			queue_add(cobj, cobj->response, insr);
@@ -1265,7 +1308,8 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 					{
 						if(debug>=3) printf("\n%llu: %s - Its a tag hit!", global_time, cobj->name);
 						req->dispatch_time = max_cmp(req->completion_time, max_cmp(cobj->data_next, global_time)) + 1; 
-						req->stage=1;
+						if(req->ldst==0) req->stage=1; //LD operation
+						else if(req->ldst==1) req->stage = 6; //ST operation
 						req->completion_time = req->dispatch_time + optime(cobj, req); //optime for data lookup
 						cobj->data_next = req->completion_time;
 						if(debug>=4) printf("\nDispatch alloted is: %llu. New data avail is %llu.", req->dispatch_time, cobj->data_next);
@@ -1280,7 +1324,6 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 							req->dispatch_time = max_cmp(req->completion_time, max_cmp(cobj->data_next, global_time)) +1;
 							req->stage=2; // Using to say that the lookup happened on the forward queue
 							req->completion_time = req->dispatch_time + optime(cobj, req);
-							cobj->data_next = req->completion_time; 
 							assert(0);
 						}
 
@@ -1297,32 +1340,21 @@ query * dispatch_queues(cache * cobj, unsigned long long int timestep, int queue
 								schedule_queue(cobj, req, 0); //Send to forward queue if ld/st lookup failed
 								req->dispatch_time = 0; //Making the dispatch at input queue as zero
 							}
-
-							else //if its a writeback request
-							{
-								req->dispatch_time = (cobj->data_next, cobj->tag_next)+1;
-								req->stage=3;
-								req->completion_time = req->dispatch_time + optime(cobj, req); //looks at stage to decide 
-								cobj->data_next = cobj->tag_next = req->completion_time; 
-								assert(0);
-							}
 						}
 
 					}
-
 				}
 		
-				else if(req->stage==1) //Bank hit - Data handling 
+				else if((req->stage==1) || (req->stage==6)) //Bank hit - Data handling 
 				{	//Normal LD/ST
 	 				if(debug>=3) printf("\n%llu: %s - Data handling under progress", global_time, cobj->name);
-						
-					//update properties of req
-					
+
 					if(debug>=4) 
 					{
 						printf("\nIt was a LD/ST HIT for request with address:");
 						print_bits(cobj, req->addr); 
 					}
+
 					//hit_hook(cobj)
 					req->dispatch_time=0;
 					req->stage=11; //To indicate that the request is a hit and being returned

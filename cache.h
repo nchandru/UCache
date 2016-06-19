@@ -92,6 +92,11 @@ struct cache
 
 	int miss; //For MPKI
 
+	int loadtime;
+	int storetime;
+	int victimtime;
+	int lookuptime;
+
 };
 
 struct request
